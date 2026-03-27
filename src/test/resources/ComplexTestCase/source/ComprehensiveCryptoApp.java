@@ -4,6 +4,11 @@ import javax.crypto.Cipher;
 abstract class BaseCryptoHandler {
     // The API call is here, but the algorithm string comes from the subclass!
     protected void executeCipher(String algorithm) throws Exception {
+        getCipher(algorithm);
+    }
+
+    private void getCipher(String algorithm) throws Exception
+    {
         Cipher.getInstance(algorithm);
     }
 }
@@ -31,6 +36,6 @@ public class ComprehensiveCryptoApp {
         // Triggering Case 5
         EnterpriseHandler handler = new EnterpriseHandler();
         handler.process(true);
-//        handler.process(false);
+        handler.process(false);
     }
 }

@@ -1,0 +1,1 @@
+javac --release 8 -d src/test/resources/ComplexTestCase/binary src/test/resources/ComplexTestCase/source/ComprehensiveCryptoApp.java

@@ -1,6 +1,8 @@
 package CryptoApp;
 
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 
@@ -24,12 +26,6 @@ import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
-import java.util.HashSet;
-
-/**
- * Detects cryptographic API usage across multiple target classes and classifies
- * algorithms using inter-procedural backward data flow analysis on the Jimple IR.
- */
 public class CryptoDetector {
 
     private static final Set<String> TARGET_CLASSES = Set.of(
@@ -42,6 +38,7 @@ public class CryptoDetector {
     private static JavaView view;
     private static CallGraph cg;
 
+    // Prevents the scanner from analyzing the same method in an infinite loop
     private static Set<String> visitedMethods = new HashSet<>();
 
     public static void main(String[] args) {
@@ -59,7 +56,7 @@ public class CryptoDetector {
                         "processCryptography", VoidType.getInstance(), Collections.emptyList()));
 
         if (view.getMethod(entryMethodSignature).isEmpty()) {
-            System.err.println("Could not find ComprehensiveCryptoApp. Did you compile it?");
+            System.err.println("Could not find ComprehensiveCryptoApp.");
             return;
         }
 
@@ -71,34 +68,27 @@ public class CryptoDetector {
 
         scanMethod(methodToAnalyze);
 
-        System.out.println("==================================================");
         System.out.println("Analysis Complete.");
     }
 
     private static void scanMethod(SootMethod method) {
-        if (!method.hasBody()) {
-            return;
-        }
-
+        // Echo Fix: Stop if we have already scanned this exact method
         if (!visitedMethods.add(method.getSignature().toString())) {
             return;
         }
 
+        if (!method.hasBody()) return;
         List<Stmt> stmts = method.getBody().getStmts();
 
         for (int i = 0; i < stmts.size(); i++) {
             Stmt stmt = stmts.get(i);
 
-            // CLEAN NATIVE SOOTUP APPROACH: Check if the statement contains any invocation
             if (stmt.containsInvokeExpr()) {
-
-                // Safely extract the invocation using the native base class
                 AbstractInvokeExpr invokeExpr = (AbstractInvokeExpr) stmt.getInvokeExpr();
 
                 String calledMethod = invokeExpr.getMethodSignature().getName();
                 String declaringClass = invokeExpr.getMethodSignature().getDeclClassType().getClassName();
 
-                // 1. Check if the call is one of our target cryptographic APIs
                 if (calledMethod.equals("getInstance") && (
                         declaringClass.contains("Cipher") ||
                                 declaringClass.contains("MessageDigest") ||
@@ -107,16 +97,21 @@ public class CryptoDetector {
 
                     Value argument = invokeExpr.getArgs().getFirst();
 
+                    // Create the base path for this discovery (e.g., "[BaseCryptoHandler.executeCipher]")
+                    LinkedList<String> callChain = new LinkedList<>();
+                    callChain.add(getShortMethodName(method));
+
                     if (argument instanceof StringConstant) {
                         String algorithm = ((StringConstant) argument).getValue();
-                        AlgorithmClassifier.classifyAlgorithm(declaringClass, algorithm, method.getName(), "Direct String Literal");
+                        AlgorithmClassifier.classifyAlgorithm(declaringClass, algorithm, callChain, "Direct String Literal");
                     }
                     else if (argument instanceof Local) {
-                        traceLocalDefinition(argument, declaringClass, method, stmts, i);
+                        // Pass the chain down into the backward trace
+                        traceLocalDefinition(argument, declaringClass, method, stmts, i, callChain);
                     }
                 }
 
-                // 2. INTER-PROCEDURAL JUMP: If this is a call to a custom project method, recursively jump into it!
+                // Recursive Forward Jump
                 if (!declaringClass.startsWith("java.") && !declaringClass.startsWith("javax.") && !declaringClass.startsWith("sun.")) {
                     cg.callsFrom(method.getSignature()).forEach(targetSignature -> {
                         if (view.getMethod(targetSignature).isPresent()) {
@@ -128,7 +123,7 @@ public class CryptoDetector {
         }
     }
 
-    private static void traceLocalDefinition(Value localVariable, String apiClass, SootMethod currentMethod, List<Stmt> stmts, int startIndex) {
+    private static void traceLocalDefinition(Value localVariable, String apiClass, SootMethod currentMethod, List<Stmt> stmts, int startIndex, LinkedList<String> callChain) {
         for (int i = startIndex - 1; i >= 0; i--) {
             Stmt currentStmt = stmts.get(i);
 
@@ -140,24 +135,23 @@ public class CryptoDetector {
 
                     if (rightSide instanceof StringConstant) {
                         String algorithm = ((StringConstant) rightSide).getValue();
-                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, currentMethod.getName(), "Resolved via Data Flow");
+                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, callChain, "Resolved via Data Flow");
                     }
                 }
             }
 
-            // Identity Assignment (e.g., algo = @parameter0) -> CROSS METHOD BOUNDARY
+            // Cross Method Boundary Jump!
             if (currentStmt instanceof JIdentityStmt) {
                 JIdentityStmt identityStmt = (JIdentityStmt) currentStmt;
 
                 if (identityStmt.getLeftOp().equivTo(localVariable) && identityStmt.getRightOp() instanceof JParameterRef) {
 
                     int paramIndex = ((JParameterRef) identityStmt.getRightOp()).getIndex();
-                    System.out.println("   [⤾] Parameter pass detected in [" + currentMethod.getName() + "]. Tracing backward to callers...");
 
                     cg.callsTo(currentMethod.getSignature()).forEach(callerSignature -> {
                         if (view.getMethod(callerSignature).isPresent()) {
                             SootMethod callerMethod = view.getMethod(callerSignature).get();
-                            traceArgumentFromCaller(callerMethod, currentMethod.getSignature(), paramIndex, apiClass);
+                            traceArgumentFromCaller(callerMethod, currentMethod.getSignature(), paramIndex, apiClass, callChain);
                         }
                     });
                 }
@@ -165,9 +159,13 @@ public class CryptoDetector {
         }
     }
 
-    private static void traceArgumentFromCaller(SootMethod callerMethod, MethodSignature targetSignature, int paramIndex, String apiClass) {
+    private static void traceArgumentFromCaller(SootMethod callerMethod, MethodSignature targetSignature, int paramIndex, String apiClass, LinkedList<String> callChain) {
         if (!callerMethod.hasBody()) return;
         List<Stmt> stmts = callerMethod.getBody().getStmts();
+
+        // We jumped up a level! Prepend this caller to our path tracking list.
+        LinkedList<String> newChain = new LinkedList<>(callChain);
+        newChain.addFirst(getShortMethodName(callerMethod));
 
         for (int i = 0; i < stmts.size(); i++) {
             Stmt stmt = stmts.get(i);
@@ -175,21 +173,30 @@ public class CryptoDetector {
             if (stmt.containsInvokeExpr()) {
                 AbstractInvokeExpr invokeExpr = (AbstractInvokeExpr) stmt.getInvokeExpr();
 
-                // FIXED: Use getSubSignature() to ignore the class name!
-                // This perfectly matches "executeCipher(String)" whether it was called on BaseHandler or EnterpriseHandler.
+                // Polymorphism Fix: Use getSubSignature to match the method regardless of inheritance
                 if (invokeExpr.getMethodSignature().getSubSignature().equals(targetSignature.getSubSignature())) {
 
                     Value argument = invokeExpr.getArgs().get(paramIndex);
 
                     if (argument instanceof StringConstant) {
                         String algorithm = ((StringConstant) argument).getValue();
-                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, callerMethod.getName(), "Inter-Procedural Trace");
+                        // Pass our updated path list to the classifier!
+                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, newChain, "Inter-Procedural Trace");
                     } else if (argument instanceof Local) {
-                        // Resume the backward trace in the CALLER'S body
-                        traceLocalDefinition(argument, apiClass, callerMethod, stmts, i);
+                        // Keep tracing backward inside the caller's body
+                        traceLocalDefinition(argument, apiClass, callerMethod, stmts, i, newChain);
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Helper to clean up the UI by extracting just the "ClassName.methodName"
+     */
+    private static String getShortMethodName(SootMethod method) {
+        String fullClass = method.getDeclaringClassType().getClassName();
+        String shortClass = fullClass.contains(".") ? fullClass.substring(fullClass.lastIndexOf('.') + 1) : fullClass;
+        return shortClass + "." + method.getName();
     }
 }

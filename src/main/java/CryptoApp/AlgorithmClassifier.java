@@ -1,26 +1,31 @@
 package CryptoApp;
 
+import java.util.List;
 import java.util.Set;
 
+/**
+ * Classifies cryptographic algorithms and prints their exact data flow paths.
+ */
 public class AlgorithmClassifier {
 
     private static final Set<String> VULNERABLE_ALGORITHMS = Set.of(
             "RSA", "MD5", "SHA-1", "DSA", "ECC", "EC"
     );
 
-    // CHANGED: Swapped 'int lineNum' for 'String methodName'
-    public static void classifyAlgorithm(String apiClass, String algorithm, String methodName, String detectionMethod) {
+    public static void classifyAlgorithm(String apiClass, String algorithm, List<String> callChain, String detectionMethod) {
         String upperAlgo = algorithm.toUpperCase();
-        boolean isVulnerable = VULNERABLE_ALGORITHMS.stream()
-                .anyMatch(upperAlgo::contains);
+        boolean isVulnerable = VULNERABLE_ALGORITHMS.stream().anyMatch(upperAlgo::contains);
 
         String shortApiClass = apiClass.substring(apiClass.lastIndexOf('.') + 1);
 
-        // CHANGED: Output now points developers to the specific method instead of a line number
-        System.out.println("Detection in method [" + methodName + "] via " + detectionMethod + ":");
+        // Join the LinkedList together with arrows!
+        String path = String.join(" -> ", callChain);
+
+        System.out.println("Data Flow Path: [" + path + "]");
+        System.out.println("  Detection:  " + detectionMethod);
         System.out.println("  API Class:  " + shortApiClass);
         System.out.println("  Algorithm:  " + algorithm);
         System.out.println("  Status:     " + (isVulnerable ? "⚠️ VULNERABLE (PQC Migration Required)" : "✓ SAFE/STANDARD"));
-        System.out.println();
+        System.out.println("--------------------------------------------------");
     }
 }
