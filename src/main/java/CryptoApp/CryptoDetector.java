@@ -35,26 +35,26 @@ public class CryptoDetector {
             "javax.crypto.KeyGenerator"
     );
 
-    private static final String appPath = "src/test/resources/ComplexTestCase/binary";
-    private static final String className = "ComprehensiveCryptoApp";
-    private static final String entryMethodName = "processCryptography";
+    private static final String APP_PATH = "src/test/resources/ComplexTestCase/binary";
+    private static final String CLASS_NAME = "ComprehensiveCryptoApp";
+    private static final String ENTRY_METHOD_NAME = "processCryptography";
 
     private static JavaView view;
-    private static CallGraph cg;
+    private static CallGraph callGraph;
     private static final Set<String> visitedMethods = new HashSet<>();
 
     public static void main(String[] args) {
         System.out.println("SootUp Analysis...\n");
 
-        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(appPath);
+        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(APP_PATH);
         view = new JavaView(Collections.singletonList(inputLocation));
 
         JavaIdentifierFactory idFactory = JavaIdentifierFactory.getInstance();
-        JavaClassType appType = idFactory.getClassType(className);
+        JavaClassType appType = idFactory.getClassType(CLASS_NAME);
 
         MethodSignature entrySignature = idFactory.getMethodSignature(
                 appType,
-                idFactory.getMethodSubSignature(entryMethodName, VoidType.getInstance(), Collections.emptyList())
+                idFactory.getMethodSubSignature(ENTRY_METHOD_NAME, VoidType.getInstance(), Collections.emptyList())
         );
 
         if (view.getMethod(entrySignature).isEmpty()) {
@@ -63,7 +63,7 @@ public class CryptoDetector {
         }
 
         CallGraphAlgorithm cha = new ClassHierarchyAnalysisAlgorithm(view);
-        cg = cha.initialize(Collections.singletonList(entrySignature));
+        callGraph = cha.initialize(Collections.singletonList(entrySignature));
 
         System.out.println("==================================================");
         scanMethod(view.getMethod(entrySignature).get());
@@ -75,36 +75,26 @@ public class CryptoDetector {
             return;
         }
 
-        List<Stmt> stmts = method.getBody().getStmts();
+        List<Stmt> statements = method.getBody().getStmts();
 
-        // 1. Analyze local statements
-        for (int i = 0; i < stmts.size(); i++) {
-            Stmt stmt = stmts.get(i);
+        for (int i = 0; i < statements.size(); i++) {
+            Stmt stmt = statements.get(i);
             if (!stmt.containsInvokeExpr()) {
                 continue;
             }
 
             AbstractInvokeExpr invokeExpr = (AbstractInvokeExpr) stmt.getInvokeExpr();
-            String calledMethod = invokeExpr.getMethodSignature().getName();
-            String declaringClass = invokeExpr.getMethodSignature().getDeclClassType().getClassName();
+            String targetClassName = invokeExpr.getMethodSignature().getDeclClassType().toString();
 
-            if ("getInstance".equals(calledMethod) && isTargetApi(declaringClass)) {
-                Value argument = invokeExpr.getArgs().getFirst();
-
+            if (isTargetGetInstanceCall(invokeExpr, targetClassName)) {
                 LinkedList<String> callChain = new LinkedList<>();
                 callChain.add(getShortMethodName(method));
-
-                if (argument instanceof StringConstant) {
-                    String algorithm = ((StringConstant) argument).getValue();
-                    AlgorithmClassifier.classifyAlgorithm(declaringClass, algorithm, callChain, "Direct String Literal");
-                } else if (argument instanceof Local) {
-                    traceLocalDefinition(argument, declaringClass, method, stmts, i, callChain);
-                }
+                Value argument = invokeExpr.getArgs().getFirst();
+                traceAlgorithmArgument(argument, targetClassName, method, statements, i, callChain, "Direct String Literal");
             }
         }
 
-        // 2. Traverse forward call graph edges for custom methods
-        cg.callsFrom(method.getSignature()).forEach(targetSignature -> {
+        callGraph.callsFrom(method.getSignature()).forEach(targetSignature -> {
             String targetClass = targetSignature.getDeclClassType().getClassName();
             if (!isJavaLibrary(targetClass)) {
                 view.getMethod(targetSignature).ifPresent(CryptoDetector::scanMethod);
@@ -112,26 +102,24 @@ public class CryptoDetector {
         });
     }
 
-    private static void traceLocalDefinition(Value localVariable, String apiClass, SootMethod currentMethod, List<Stmt> stmts, int startIndex, LinkedList<String> callChain) {
+    private static void traceLocalDefinition(Value localVariable, String apiClass, SootMethod currentMethod, List<Stmt> statements, int startIndex, LinkedList<String> callChain) {
         for (int i = startIndex - 1; i >= 0; i--) {
-            Stmt stmt = stmts.get(i);
+            Stmt stmt = statements.get(i);
 
-            // Handle standard assignments
             if (stmt instanceof JAssignStmt) {
                 JAssignStmt assignStmt = (JAssignStmt) stmt;
-                if (assignStmt.getLeftOp().equivTo(localVariable) && assignStmt.getRightOp() instanceof StringConstant) {
-                    String algorithm = ((StringConstant) assignStmt.getRightOp()).getValue();
-                    AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, callChain, "Resolved via Data Flow");
+
+                if (assignStmt.getLeftOp().equivTo(localVariable)) {
+                    traceAlgorithmArgument(assignStmt.getRightOp(), apiClass, currentMethod, statements, i, callChain, "Resolved via Data Flow");
                 }
             }
 
-            // Handle inter-procedural parameters
             if (stmt instanceof JIdentityStmt) {
                 JIdentityStmt identityStmt = (JIdentityStmt) stmt;
                 if (identityStmt.getLeftOp().equivTo(localVariable) && identityStmt.getRightOp() instanceof JParameterRef) {
                     int paramIndex = ((JParameterRef) identityStmt.getRightOp()).getIndex();
 
-                    cg.callsTo(currentMethod.getSignature()).forEach(callerSignature -> {
+                    callGraph.callsTo(currentMethod.getSignature()).forEach(callerSignature -> {
                         view.getMethod(callerSignature).ifPresent(callerMethod ->
                                 traceArgumentFromCaller(callerMethod, currentMethod.getSignature(), paramIndex, apiClass, callChain)
                         );
@@ -142,15 +130,17 @@ public class CryptoDetector {
     }
 
     private static void traceArgumentFromCaller(SootMethod callerMethod, MethodSignature targetSignature, int paramIndex, String apiClass, LinkedList<String> callChain) {
-        if (!callerMethod.hasBody()) return;
+        if (!callerMethod.hasBody()) {
+            return;
+        }
 
         LinkedList<String> newChain = new LinkedList<>(callChain);
         newChain.addFirst(getShortMethodName(callerMethod));
 
-        List<Stmt> stmts = callerMethod.getBody().getStmts();
+        List<Stmt> statements = callerMethod.getBody().getStmts();
 
-        for (int i = 0; i < stmts.size(); i++) {
-            Stmt stmt = stmts.get(i);
+        for (int i = 0; i < statements.size(); i++) {
+            Stmt stmt = statements.get(i);
             if (!stmt.containsInvokeExpr()) {
                 continue;
             }
@@ -164,26 +154,28 @@ public class CryptoDetector {
                     String algorithm = ((StringConstant) argument).getValue();
                     AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, newChain, "Inter-Procedural Trace");
                 } else if (argument instanceof Local) {
-                    traceLocalDefinition(argument, apiClass, callerMethod, stmts, i, newChain);
+                    traceLocalDefinition(argument, apiClass, callerMethod, statements, i, newChain);
                 }
             }
         }
     }
 
-    // --- Helper Methods ---
+    private static boolean isTargetGetInstanceCall(AbstractInvokeExpr invokeExpr, String className) {
+        return "getInstance".equals(invokeExpr.getMethodSignature().getName()) && isTargetApi(className);
+    }
+
+    private static void traceAlgorithmArgument(Value argument, String apiClass, SootMethod method, List<Stmt> statements, int statementIndex,
+                                               LinkedList<String> callChain, String literalSource) {
+        if (argument instanceof StringConstant) {
+            String algorithm = ((StringConstant) argument).getValue();
+            AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, callChain, literalSource);
+        } else if (argument instanceof Local) {
+            traceLocalDefinition(argument, apiClass, method, statements, statementIndex, callChain);
+        }
+    }
 
     private static boolean isTargetApi(String className) {
-        // 1. Strict Full Package Match (Best practice for Enterprise)
-        if (TARGET_CLASSES.contains(className)) {
-            return true;
-        }
-
-        // 2. Exact Equality Fallback for Phantom Classes
-        // Using .equals() instead of .contains() prevents false positives like "MyCustomCipher"
-        return className.equals("Cipher") ||
-                className.equals("MessageDigest") ||
-                className.equals("KeyPairGenerator") ||
-                className.equals("KeyGenerator");
+        return TARGET_CLASSES.contains(className);
     }
 
     private static boolean isJavaLibrary(String className) {

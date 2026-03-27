@@ -3,9 +3,6 @@ package CryptoApp;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Classifies cryptographic algorithms and prints their exact data flow paths.
- */
 public class AlgorithmClassifier {
 
     private static final Set<String> VULNERABLE_ALGORITHMS = Set.of(
@@ -13,19 +10,24 @@ public class AlgorithmClassifier {
     );
 
     public static void classifyAlgorithm(String apiClass, String algorithm, List<String> callChain, String detectionMethod) {
-        String upperAlgo = algorithm.toUpperCase();
-        boolean isVulnerable = VULNERABLE_ALGORITHMS.stream().anyMatch(upperAlgo::contains);
-
-        String shortApiClass = apiClass.substring(apiClass.lastIndexOf('.') + 1);
-
-        // Join the LinkedList together with arrows!
+        String shortApiClass = shortenClassName(apiClass);
         String path = String.join(" -> ", callChain);
 
-        System.out.println("Data Flow Path: [" + path + "]");
-        System.out.println("  Detection:  " + detectionMethod);
-        System.out.println("  API Class:  " + shortApiClass);
-        System.out.println("  Algorithm:  " + algorithm);
-        System.out.println("  Status:     " + (isVulnerable ? "⚠️ VULNERABLE (PQC Migration Required)" : "✓ SAFE/STANDARD"));
+        System.out.println("Flow: [" + path + "]");
+        System.out.println("  Found via:   " + detectionMethod);
+        System.out.println("  API used:    " + shortApiClass);
+        System.out.println("  Algorithm:   " + algorithm);
+        System.out.println("  Security:    " + (isVulnerableAlgorithm(algorithm) ? "PQC vulnerable" : "safe"));
         System.out.println("--------------------------------------------------");
+    }
+
+    private static boolean isVulnerableAlgorithm(String algorithm) {
+        String normalized = algorithm.toUpperCase();
+        return VULNERABLE_ALGORITHMS.stream().anyMatch(normalized::contains);
+    }
+
+    private static String shortenClassName(String className) {
+        int lastDot = className.lastIndexOf('.');
+        return className.substring(lastDot + 1);
     }
 }
