@@ -1,9 +1,7 @@
 package CryptoApp;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
 import sootup.callgraph.CallGraph;
 import sootup.callgraph.CallGraphAlgorithm;
 import sootup.callgraph.ClassHierarchyAnalysisAlgorithm;
@@ -25,50 +23,50 @@ import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
+/** * This example illustrates how to combine Class Hierarchy Analysis (CHA),
+ * Call Graph construction, and intra-procedural Backward Data Flow Analysis
+ * to detect vulnerable cryptographic API parameters.
+ */
 public class CryptoDetector {
 
     public static void main(String[] args) {
-        System.out.println("--- 1. Initializing Environment ---");
-        List<AnalysisInputLocation> inputLocations = new ArrayList<>();
-        // Point to the newly compiled CryptoApp
-        inputLocations.add(new JavaClassPathAnalysisInputLocation("src/test/resources/CryptoApp/binary"));
-        JavaView view = new JavaView(inputLocations);
 
-        System.out.println("\n--- 2. Class Hierarchy Analysis ---");
-        ViewTypeHierarchy typeHierarchy = new ViewTypeHierarchy(view);
+        // Create an AnalysisInputLocation, which points to a directory.
+        // All class files will be loaded from the directory.
+        AnalysisInputLocation inputLocation =
+                new JavaClassPathAnalysisInputLocation("src/test/resources/CryptoApp/binary");
+
+        // Create a view for the project, which allows us to retrieve classes
+        JavaView view = new JavaView(Collections.singletonList(inputLocation));
+
+        // Create type hierarchy
+        final ViewTypeHierarchy typeHierarchy = new ViewTypeHierarchy(view);
+
+        // Specify class types we want to receive information about
         JavaClassType protocolInterface = JavaIdentifierFactory.getInstance().getClassType("MyCryptoProtocol");
+        System.out.println("Implementers of MyCryptoProtocol: " + typeHierarchy.implementersOf(protocolInterface));
 
-        // FIXED: Using implementersOf because MyCryptoProtocol is an interface
-        System.out.println("Discovered implementations of MyCryptoProtocol: "
-                + typeHierarchy.implementersOf(protocolInterface));
-
-        System.out.println("\n--- 3. Call Graph Construction ---");
-
-        // FIXED: Define the specific entry point for our Android-like application component
+        // Create a signature for the class and entry method we want to analyze
         JavaClassType cryptoAppType = JavaIdentifierFactory.getInstance().getClassType("CryptoApp");
-        MethodSignature entryPoint = JavaIdentifierFactory.getInstance().getMethodSignature(
-                cryptoAppType,
-                JavaIdentifierFactory.getInstance().getMethodSubSignature(
-                        "processPayment",
-                        VoidType.getInstance(), // The method returns void
-                        Collections.singletonList(protocolInterface) // It takes 1 argument: MyCryptoProtocol
-                )
-        );
+        MethodSignature entryMethodSignature =
+                JavaIdentifierFactory.getInstance()
+                        .getMethodSignature(
+                                cryptoAppType,
+                                JavaIdentifierFactory.getInstance()
+                                        .getMethodSubSignature(
+                                                "processPayment",
+                                                VoidType.getInstance(),
+                                                Collections.singletonList(protocolInterface)));
 
+        // Create CG by initializing CHA with entry method(s)
         CallGraphAlgorithm cha = new ClassHierarchyAnalysisAlgorithm(view);
+        CallGraph cg = cha.initialize(Collections.singletonList(entryMethodSignature));
 
-        // Pass the entry point directly into the initialize method
-        CallGraph cg = cha.initialize(Collections.singletonList(entryPoint));
-
-        System.out.println("Call Graph successfully built from entry point: processPayment()");
-
-        System.out.println("\n--- 4. Hunting for Vulnerabilities ---");
-
-        // SootUp 1.2.0 compliant way to build the Target API signature: Cipher.getInstance(String)
+        // Create a signature for the target API we want to track
         ClassType cipherClassType = JavaIdentifierFactory.getInstance().getClassType("javax.crypto.Cipher");
         ClassType stringClassType = JavaIdentifierFactory.getInstance().getClassType("java.lang.String");
 
-        MethodSignature cipherGetInstanceSig = JavaIdentifierFactory.getInstance().getMethodSignature(
+        MethodSignature targetApiSignature = JavaIdentifierFactory.getInstance().getMethodSignature(
                 cipherClassType,
                 JavaIdentifierFactory.getInstance().getMethodSubSignature(
                         "getInstance",
@@ -77,84 +75,85 @@ public class CryptoDetector {
                 )
         );
 
-        // Query the Call Graph: Which methods in the app eventually call Cipher.getInstance?
-        cg.callsTo(cipherGetInstanceSig).forEach(callerSignature -> {
+        // Traverse the Call Graph to find callers of the target API
+        cg.callsTo(targetApiSignature).forEach(callerSignature -> {
 
-            // Retrieve the actual SootMethod using the signature
-            if (view.getMethod(callerSignature).isPresent()) {
-                SootMethod callerMethod = view.getMethod(callerSignature).get();
-
-                System.out.println("\n[!] Cryptographic API found inside method: "
-                        + callerMethod.getDeclaringClassType().getClassName()
-                        + "." + callerMethod.getName());
-
-                // Trigger Data Flow to extract the string!
-                analyzeDataFlow(callerMethod);
+            // Check if the method is present in the view before retrieving
+            if (!view.getMethod(callerSignature).isPresent()) {
+                return;
             }
-        });
 
-        System.out.println("\n--- Scan Complete ---");
+            SootMethod method = view.getMethod(callerSignature).get();
+            System.out.println("\nAnalyzing method: " + method.getSignature());
+
+            // Perform Data Flow Analysis on the resolved method
+            analyzeDataFlow(method);
+        });
     }
 
     /**
-     * Extracts the Jimple Body and finds the variable passed to the API.
+     * Scans the Jimple body for the target API and extracts its parameters.
      */
     private static void analyzeDataFlow(SootMethod method) {
-        if (!method.hasBody()) return;
+        if (!method.hasBody()) {
+            return;
+        }
 
         List<Stmt> stmts = method.getBody().getStmts();
 
         for (int i = 0; i < stmts.size(); i++) {
             Stmt stmt = stmts.get(i);
-            JStaticInvokeExpr invokeExpr = getInvokeExpression(stmt);
+            JStaticInvokeExpr invokeExpr = extractStaticInvocation(stmt);
 
+            // Check if the statement contains our target Cipher.getInstance call
             if (invokeExpr != null
                     && invokeExpr.getMethodSignature().getName().equals("getInstance")
                     && invokeExpr.getMethodSignature().getDeclClassType().getClassName().equals("javax.crypto.Cipher")) {
 
-                // SootUp 1.2.0 compliant way to get the first argument
                 Value argument = invokeExpr.getArgs().get(0);
 
                 if (argument instanceof StringConstant) {
-                    String algo = ((StringConstant) argument).getValue();
-                    evaluateSecurity(algo, "Hardcoded String");
+                    String algorithm = ((StringConstant) argument).getValue();
+                    System.out.println(" -> Hardcoded Constant Detected: " + algorithm);
+                    evaluateSecurity(algorithm);
                 } else if (argument instanceof Local) {
-                    System.out.println("   -> Variable detected. Initiating Backward Trace...");
-                    traceVariableBackward(argument, stmts, i);
+                    System.out.println(" -> Local Variable Detected (" + argument + "). Tracing definition...");
+                    traceLocalDefinition(argument, stmts, i);
                 }
             }
         }
     }
 
     /**
-     * Reverses up the Jimple statements to find where the Local variable was assigned.
+     * Performs an intra-procedural backward trace to find the definition of a Local variable.
      */
-    private static void traceVariableBackward(Value targetVariable, List<Stmt> stmts, int callIndex) {
-        // Walk backward from the API call
-        for (int i = callIndex - 1; i >= 0; i--) {
-            Stmt previousStmt = stmts.get(i);
+    private static void traceLocalDefinition(Value localVariable, List<Stmt> stmts, int startIndex) {
+        for (int i = startIndex - 1; i >= 0; i--) {
+            Stmt currentStmt = stmts.get(i);
 
-            if (previousStmt instanceof JAssignStmt) {
-                JAssignStmt assignStmt = (JAssignStmt) previousStmt;
+            if (currentStmt instanceof JAssignStmt) {
+                JAssignStmt assignStmt = (JAssignStmt) currentStmt;
 
-                if (assignStmt.getLeftOp().equivTo(targetVariable)) {
+                // If the left side matches our local variable, we found the definition
+                if (assignStmt.getLeftOp().equivTo(localVariable)) {
                     Value rightSide = assignStmt.getRightOp();
 
                     if (rightSide instanceof StringConstant) {
-                        String resolvedString = ((StringConstant) rightSide).getValue();
-                        evaluateSecurity(resolvedString, "Resolved via Data Flow");
+                        String algorithm = ((StringConstant) rightSide).getValue();
+                        System.out.println(" -> Variable Resolved To: " + algorithm);
+                        evaluateSecurity(algorithm);
                         return;
                     }
                 }
             }
         }
-        System.out.println("   -> [FAILED] Could not resolve variable.");
+        System.out.println(" -> Could not resolve variable definition.");
     }
 
     /**
-     * Safely extracts a static invocation from Jimple.
+     * Extracts a JStaticInvokeExpr from a given statement, if present.
      */
-    private static JStaticInvokeExpr getInvokeExpression(Stmt stmt) {
+    private static JStaticInvokeExpr extractStaticInvocation(Stmt stmt) {
         if (stmt instanceof JAssignStmt && ((JAssignStmt) stmt).getRightOp() instanceof JStaticInvokeExpr) {
             return (JStaticInvokeExpr) ((JAssignStmt) stmt).getRightOp();
         } else if (stmt instanceof JInvokeStmt && ((JInvokeStmt) stmt).getInvokeExpr() instanceof JStaticInvokeExpr) {
@@ -164,14 +163,14 @@ public class CryptoDetector {
     }
 
     /**
-     * Security Evaluation
+     * Evaluates the security posture of the extracted cryptographic algorithm.
      */
-    private static void evaluateSecurity(String algo, String detectionMethod) {
-        String upper = algo.toUpperCase();
-        if (upper.contains("RSA") || upper.contains("MD5") || upper.contains("SHA1") || upper.contains("DES")) {
-            System.out.println("   -> [VULNERABLE] Algorithm: " + algo + " (" + detectionMethod + ")");
-        } else if (upper.contains("AES") || upper.contains("CHACHA")) {
-            System.out.println("   -> [SAFE] Algorithm: " + algo + " (" + detectionMethod + ")");
+    private static void evaluateSecurity(String algorithm) {
+        String normalizedAlgo = algorithm.toUpperCase();
+        if (normalizedAlgo.contains("RSA") || normalizedAlgo.contains("MD5") || normalizedAlgo.contains("DES")) {
+            System.out.println("    [VULNERABILITY] Weak/Quantum-Vulnerable Algorithm found.");
+        } else if (normalizedAlgo.contains("AES") || normalizedAlgo.contains("CHACHA")) {
+            System.out.println("    [SAFE] Modern standard algorithm found.");
         }
     }
 }

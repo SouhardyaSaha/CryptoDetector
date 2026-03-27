@@ -28,26 +28,3 @@ public class CryptoApp {
         protocol.encryptData();
     }
 }
-
-
-/*
-*
-import javax.crypto.Cipher;
-
-public class CryptoTest {
-
-    // Example 1: Hardcoded String (Easy to detect)
-    public void secureMethod() throws Exception {
-        Cipher.getInstance("AES/GCM/NoPadding");
-    }
-
-    // Example 2: Variable Assignment (Requires Data Flow Analysis)
-    public void vulnerableMethod() throws Exception {
-        String badAlgo = "RSA/ECB/PKCS1Padding"; // Quantum Vulnerable!
-
-        // ... imagine lots of code here ...
-
-        Cipher.getInstance(badAlgo);
-    }
-}
-* */
