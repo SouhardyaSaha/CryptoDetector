@@ -11,9 +11,10 @@ import sootup.core.inputlocation.AnalysisInputLocation;
 import sootup.core.jimple.basic.Local;
 import sootup.core.jimple.basic.Value;
 import sootup.core.jimple.common.constant.StringConstant;
-import sootup.core.jimple.common.expr.JStaticInvokeExpr;
+import sootup.core.jimple.common.expr.AbstractInvokeExpr;
+import sootup.core.jimple.common.ref.JParameterRef;
 import sootup.core.jimple.common.stmt.JAssignStmt;
-import sootup.core.jimple.common.stmt.JInvokeStmt;
+import sootup.core.jimple.common.stmt.JIdentityStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.SootMethod;
 import sootup.core.signatures.MethodSignature;
@@ -23,13 +24,14 @@ import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
+import java.util.HashSet;
+
 /**
  * Detects cryptographic API usage across multiple target classes and classifies
- * algorithms using backward data flow analysis on the Jimple IR.
+ * algorithms using inter-procedural backward data flow analysis on the Jimple IR.
  */
 public class CryptoDetector {
 
-    // Define the APIs we care about tracking
     private static final Set<String> TARGET_CLASSES = Set.of(
             "javax.crypto.Cipher",
             "java.security.MessageDigest",
@@ -37,127 +39,157 @@ public class CryptoDetector {
             "javax.crypto.KeyGenerator"
     );
 
+    private static JavaView view;
+    private static CallGraph cg;
+
+    private static Set<String> visitedMethods = new HashSet<>();
+
     public static void main(String[] args) {
 
-        System.out.println("Initializing SootUp Analysis...\n");
+        System.out.println("Initializing Inter-Procedural SootUp Analysis...\n");
         AnalysisInputLocation inputLocation =
-                new JavaClassPathAnalysisInputLocation("src/test/resources/ComprehensiveCryptoApp/binary");
+                new JavaClassPathAnalysisInputLocation("src/test/resources/ComplexTestCase/binary");
 
-        JavaView view = new JavaView(Collections.singletonList(inputLocation));
+        view = new JavaView(Collections.singletonList(inputLocation));
 
-        // 1. Setup the Entry Point (ComprehensiveCryptoApp.processCryptography)
         JavaClassType appType = JavaIdentifierFactory.getInstance().getClassType("ComprehensiveCryptoApp");
         MethodSignature entryMethodSignature = JavaIdentifierFactory.getInstance().getMethodSignature(
                 appType,
                 JavaIdentifierFactory.getInstance().getMethodSubSignature(
                         "processCryptography", VoidType.getInstance(), Collections.emptyList()));
 
-        // Check if the target app compiled correctly
         if (view.getMethod(entryMethodSignature).isEmpty()) {
             System.err.println("Could not find ComprehensiveCryptoApp. Did you compile it?");
             return;
         }
 
-        // 2. Build the Call Graph starting from processCryptography
         CallGraphAlgorithm cha = new ClassHierarchyAnalysisAlgorithm(view);
-        CallGraph cg = cha.initialize(Collections.singletonList(entryMethodSignature));
+        cg = cha.initialize(Collections.singletonList(entryMethodSignature));
 
-        // 3. Since we want to analyze the entry method itself, we pass it to the Data Flow analyzer
         SootMethod methodToAnalyze = view.getMethod(entryMethodSignature).get();
-        System.out.println("Scanning Method: " + methodToAnalyze.getSignature() + "\n");
         System.out.println("==================================================");
 
-        analyzeDataFlow(methodToAnalyze);
+        scanMethod(methodToAnalyze);
 
         System.out.println("==================================================");
         System.out.println("Analysis Complete.");
     }
 
-    /**
-     * Scans the Jimple body for target APIs and extracts their parameters.
-     */
-    /**
-     * Scans the Jimple body for target APIs and extracts their parameters.
-     */
-    private static void analyzeDataFlow(SootMethod method) {
+    private static void scanMethod(SootMethod method) {
         if (!method.hasBody()) {
-            System.out.println("   [!] Error: Method has no body.");
+            return;
+        }
+
+        if (!visitedMethods.add(method.getSignature().toString())) {
             return;
         }
 
         List<Stmt> stmts = method.getBody().getStmts();
-        System.out.println(" -> Extracting " + stmts.size() + " Jimple statements...\n");
 
         for (int i = 0; i < stmts.size(); i++) {
             Stmt stmt = stmts.get(i);
-            JStaticInvokeExpr invokeExpr = extractStaticInvocation(stmt);
 
-            if (invokeExpr != null) {
+            // CLEAN NATIVE SOOTUP APPROACH: Check if the statement contains any invocation
+            if (stmt.containsInvokeExpr()) {
+
+                // Safely extract the invocation using the native base class
+                AbstractInvokeExpr invokeExpr = (AbstractInvokeExpr) stmt.getInvokeExpr();
+
                 String calledMethod = invokeExpr.getMethodSignature().getName();
                 String declaringClass = invokeExpr.getMethodSignature().getDeclClassType().getClassName();
 
-                // X-RAY DEBUG: Print every static method call the analyzer sees
-                System.out.println("   [DEBUG] Found Static Call: " + declaringClass + "." + calledMethod);
+                // 1. Check if the call is one of our target cryptographic APIs
+                if (calledMethod.equals("getInstance") && (
+                        declaringClass.contains("Cipher") ||
+                                declaringClass.contains("MessageDigest") ||
+                                declaringClass.contains("KeyPairGenerator") ||
+                                declaringClass.contains("KeyGenerator"))) {
 
-                if (calledMethod.equals("getInstance")) {
+                    Value argument = invokeExpr.getArgs().getFirst();
 
-                    // FIXED: Made the matching more flexible in case SootUp drops the "javax.crypto." prefix
-                    if (declaringClass.contains("Cipher") ||
-                            declaringClass.contains("MessageDigest") ||
-                            declaringClass.contains("KeyPairGenerator") ||
-                            declaringClass.contains("KeyGenerator")) {
-
-                        Value argument = invokeExpr.getArgs().getFirst();
-
-                        // Case A: Direct String Literal
-                        if (argument instanceof StringConstant) {
-                            String algorithm = ((StringConstant) argument).getValue();
-                            AlgorithmClassifier.classifyAlgorithm(declaringClass, algorithm, method.getName(), "Direct String Literal");
-                        }
-                        // Case B: Local Variable
-                        else if (argument instanceof Local) {
-                            traceLocalDefinition(argument, declaringClass, method.getName(), stmts, i);
-                        }
+                    if (argument instanceof StringConstant) {
+                        String algorithm = ((StringConstant) argument).getValue();
+                        AlgorithmClassifier.classifyAlgorithm(declaringClass, algorithm, method.getName(), "Direct String Literal");
                     }
+                    else if (argument instanceof Local) {
+                        traceLocalDefinition(argument, declaringClass, method, stmts, i);
+                    }
+                }
+
+                // 2. INTER-PROCEDURAL JUMP: If this is a call to a custom project method, recursively jump into it!
+                if (!declaringClass.startsWith("java.") && !declaringClass.startsWith("javax.") && !declaringClass.startsWith("sun.")) {
+                    cg.callsFrom(method.getSignature()).forEach(targetSignature -> {
+                        if (view.getMethod(targetSignature).isPresent()) {
+                            scanMethod(view.getMethod(targetSignature).get());
+                        }
+                    });
                 }
             }
         }
     }
 
-    /**
-     * Walks backward through the control flow to find where a variable was assigned.
-     */
-    private static void traceLocalDefinition(Value localVariable, String apiClass, String methodName, List<Stmt> stmts, int startIndex) {
+    private static void traceLocalDefinition(Value localVariable, String apiClass, SootMethod currentMethod, List<Stmt> stmts, int startIndex) {
         for (int i = startIndex - 1; i >= 0; i--) {
             Stmt currentStmt = stmts.get(i);
 
             if (currentStmt instanceof JAssignStmt) {
                 JAssignStmt assignStmt = (JAssignStmt) currentStmt;
 
-                // If the left side of the assignment matches our target variable
                 if (assignStmt.getLeftOp().equivTo(localVariable)) {
                     Value rightSide = assignStmt.getRightOp();
 
                     if (rightSide instanceof StringConstant) {
                         String algorithm = ((StringConstant) rightSide).getValue();
-                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, methodName, "Resolved via Data Flow");
-                        return;
+                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, currentMethod.getName(), "Resolved via Data Flow");
+                    }
+                }
+            }
+
+            // Identity Assignment (e.g., algo = @parameter0) -> CROSS METHOD BOUNDARY
+            if (currentStmt instanceof JIdentityStmt) {
+                JIdentityStmt identityStmt = (JIdentityStmt) currentStmt;
+
+                if (identityStmt.getLeftOp().equivTo(localVariable) && identityStmt.getRightOp() instanceof JParameterRef) {
+
+                    int paramIndex = ((JParameterRef) identityStmt.getRightOp()).getIndex();
+                    System.out.println("   [⤾] Parameter pass detected in [" + currentMethod.getName() + "]. Tracing backward to callers...");
+
+                    cg.callsTo(currentMethod.getSignature()).forEach(callerSignature -> {
+                        if (view.getMethod(callerSignature).isPresent()) {
+                            SootMethod callerMethod = view.getMethod(callerSignature).get();
+                            traceArgumentFromCaller(callerMethod, currentMethod.getSignature(), paramIndex, apiClass);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    private static void traceArgumentFromCaller(SootMethod callerMethod, MethodSignature targetSignature, int paramIndex, String apiClass) {
+        if (!callerMethod.hasBody()) return;
+        List<Stmt> stmts = callerMethod.getBody().getStmts();
+
+        for (int i = 0; i < stmts.size(); i++) {
+            Stmt stmt = stmts.get(i);
+
+            if (stmt.containsInvokeExpr()) {
+                AbstractInvokeExpr invokeExpr = (AbstractInvokeExpr) stmt.getInvokeExpr();
+
+                // FIXED: Use getSubSignature() to ignore the class name!
+                // This perfectly matches "executeCipher(String)" whether it was called on BaseHandler or EnterpriseHandler.
+                if (invokeExpr.getMethodSignature().getSubSignature().equals(targetSignature.getSubSignature())) {
+
+                    Value argument = invokeExpr.getArgs().get(paramIndex);
+
+                    if (argument instanceof StringConstant) {
+                        String algorithm = ((StringConstant) argument).getValue();
+                        AlgorithmClassifier.classifyAlgorithm(apiClass, algorithm, callerMethod.getName(), "Inter-Procedural Trace");
+                    } else if (argument instanceof Local) {
+                        // Resume the backward trace in the CALLER'S body
+                        traceLocalDefinition(argument, apiClass, callerMethod, stmts, i);
                     }
                 }
             }
         }
-        System.out.println("Method [" + methodName + "]: Could not resolve variable definition for " + apiClass + "\n");
-    }
-
-    /**
-     * Safely extracts a static invocation from a Jimple statement.
-     */
-    private static JStaticInvokeExpr extractStaticInvocation(Stmt stmt) {
-        if (stmt instanceof JAssignStmt && ((JAssignStmt) stmt).getRightOp() instanceof JStaticInvokeExpr) {
-            return (JStaticInvokeExpr) ((JAssignStmt) stmt).getRightOp();
-        } else if (stmt instanceof JInvokeStmt && ((JInvokeStmt) stmt).getInvokeExpr() instanceof JStaticInvokeExpr) {
-            return (JStaticInvokeExpr) ((JInvokeStmt) stmt).getInvokeExpr();
-        }
-        return null;
     }
 }
