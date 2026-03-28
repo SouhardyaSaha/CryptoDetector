@@ -1,0 +1,23 @@
+[
+  {
+    "algorithm": "RSA/ECB/PKCS1Padding",
+    "api_class": "javax.crypto.Cipher",
+    "vulnerable": true,
+    "detection_method": "Direct String Literal",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "AES/GCM/NoPadding",
+    "api_class": "javax.crypto.Cipher",
+    "vulnerable": false,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["EnterpriseHandler.process", "BaseCryptoHandler.executeCipher", "BaseCryptoHandler.getCipher"]
+  },
+  {
+    "algorithm": "DES/ECB/PKCS5Padding",
+    "api_class": "javax.crypto.Cipher",
+    "vulnerable": true,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["EnterpriseHandler.process", "BaseCryptoHandler.executeCipher", "BaseCryptoHandler.getCipher"]
+  }
+]
