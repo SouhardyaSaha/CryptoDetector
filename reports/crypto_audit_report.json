@@ -1,0 +1,65 @@
+[
+  {
+    "algorithm": "RSA/ECB/PKCS1Padding",
+    "api_class": "javax.crypto.Cipher",
+    "vulnerable": true,
+    "detection_method": "Direct String Literal",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "SHA-256",
+    "api_class": "java.security.MessageDigest",
+    "vulnerable": false,
+    "detection_method": "Direct String Literal",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "MD5",
+    "api_class": "java.security.MessageDigest",
+    "vulnerable": true,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "AES/GCM/NoPadding",
+    "api_class": "javax.crypto.Cipher",
+    "vulnerable": false,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "SHA-1",
+    "api_class": "java.security.MessageDigest",
+    "vulnerable": true,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "SHA3-256",
+    "api_class": "java.security.MessageDigest",
+    "vulnerable": false,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "EC",
+    "api_class": "java.security.KeyPairGenerator",
+    "vulnerable": true,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "AES",
+    "api_class": "javax.crypto.KeyGenerator",
+    "vulnerable": false,
+    "detection_method": "Direct String Literal",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  },
+  {
+    "algorithm": "DSA",
+    "api_class": "java.security.KeyPairGenerator",
+    "vulnerable": true,
+    "detection_method": "Resolved via Data Flow",
+    "flow": ["ComprehensiveCryptoApp.processCryptography"]
+  }
+]

@@ -35,6 +35,7 @@ public class CryptoDetector {
             "javax.crypto.KeyGenerator"
     );
 
+//    private static final String APP_PATH = "src/test/resources/ComprehensiveCryptoApp/binary";
     private static final String APP_PATH = "src/test/resources/ComplexTestCase/binary";
     private static final String CLASS_NAME = "ComprehensiveCryptoApp";
     private static final String ENTRY_METHOD_NAME = "processCryptography";
@@ -69,7 +70,7 @@ public class CryptoDetector {
 
         System.out.println("Analysis Complete.");
 
-        AlgorithmClassifier.writeJsonReport("crypto_audit_report.json");
+        AlgorithmClassifier.writeJsonReport("reports/crypto_audit_report_1.json");
     }
 
     private static void scanMethod(SootMethod method) {
