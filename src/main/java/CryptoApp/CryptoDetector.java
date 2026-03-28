@@ -65,9 +65,11 @@ public class CryptoDetector {
         CallGraphAlgorithm cha = new ClassHierarchyAnalysisAlgorithm(view);
         callGraph = cha.initialize(Collections.singletonList(entrySignature));
 
-        System.out.println("==================================================");
         scanMethod(view.getMethod(entrySignature).get());
+
         System.out.println("Analysis Complete.");
+
+        AlgorithmClassifier.writeJsonReport("crypto_audit_report.json");
     }
 
     private static void scanMethod(SootMethod method) {
